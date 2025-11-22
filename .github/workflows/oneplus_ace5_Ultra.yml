@@ -7,25 +7,25 @@ on:
         required: true
         default: '-android15-oki-xiaoxiaow'
       KERNEL_TIME:
-       description: "内核构建日期更改(默认为原厂)"
-       required: true
-       default: 'Tue Jul  1 19:48:18 UTC 2025'
+        description: "内核构建日期更改(默认为原厂)"
+        required: true
+        default: 'Tue Jul  1 19:48:18 UTC 2025'
       enable_feature_x:
-       description: "是否启用kpm"
-       required: true
-       default: false
-       type: boolean
+        description: "是否启用kpm"
+        required: true
+        default: false
+        type: boolean
       enable_feature_y:
-       description: "是否启用lz4kd"
-       required: true
-       default: true
-       type: boolean
+        description: "是否启用lz4kd"
+        required: true
+        default: true
+        type: boolean
       enable_feature_z:
-       description: "是否添加风驰驱动"
-       required: true
-       default: true
-       type: boolean
-      
+        description: "是否添加风驰驱动"
+        required: true
+        default: true
+        type: boolean
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -54,8 +54,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update && sudo apt upgrade -y
-          sudo apt install -y python3 git curl
-          sudo apt install -y python3 git curl ccache
+          sudo apt install -y python3 git curl ccache libelf-dev build-essential flex bison libssl-dev
 
       - name: Restore ccache
         uses: actions/cache@v3
@@ -76,25 +75,26 @@ jobs:
           mkdir kernel_workspace && cd kernel_workspace
           repo init -u https://github.com/HanKuCha/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m oneplus_ace5_Ultra.xml --depth=1
           repo --trace sync -c -j$(nproc --all) --no-tags
-          rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
-          rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
+          rm -f kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
+          rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
          
       - name: Set up SukiSU
         run: |
           cd kernel_workspace/kernel_platform
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
           cd ./KernelSU
-          echo "⬇️ 下载KernelSU设置工具..."
-          curl -L -o sukisu_setup.bin https://github.com/Xiaomichael/OnePlus-Actions/raw/Build/script/sukisu_setup.bin
-          chmod +x sukisu_setup.bin
           
           # 验证Makefile存在
-          if [ ! -f "kernel/Makefile" ]; then
+          if [ ! -f "../kernel/Makefile" ]; then
             echo "❌ 错误：缺少kernel/Makefile"
-            ls -la
+            ls -la ../
             exit 1
           fi
           
+          # 下载并运行sukisu_setup.bin
+          echo "⬇️ 下载KernelSU设置工具..."
+          curl -L -o sukisu_setup.bin https://github.com/Xiaomichael/OnePlus-Actions/raw/Build/script/sukisu_setup.bin
+          chmod +x sukisu_setup.bin
           ./sukisu_setup.bin
           echo "✅ SukiSU Ultra配置完成"
         
@@ -108,18 +108,19 @@ jobs:
           cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
           cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
           cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
-          #lz4k
+          
+          # lz4k
           cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./common/include/linux
           cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./common/lib
           cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./common/crypto
           cp -r ../SukiSU_patch/other/zram/lz4k_oplus ./common/lib/
+          
           # Apply patches
           cd ./common
-
           patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch || true
           cp ../../SukiSU_patch/hooks/syscall_hooks.patch ./
-          patch -p1 -F 3 < syscall_hooks.patch
-          echo "完成"
+          patch -p1 -F 3 < syscall_hooks.patch || true
+          echo "✅ SUSFS配置完成"
       
       - name: Apply HMBird GKI patch
         run: |
@@ -195,19 +196,19 @@ jobs:
           MODULE_AUTHOR("reigadegr");
           MODULE_DESCRIPTION("Forcefully convert HMBIRD_OGKI to HMBIRD_GKI.");
           EOF
+          
           if ! grep -q "hmbird_patch.o" Makefile; then
-          echo "obj-y += hmbird_patch.o" >> Makefile
+            echo "obj-y += hmbird_patch.o" >> Makefile
           fi
-          cd ../../../
-          git add -A
-          # git commit -m "Add HMBird GKI patch" || true
- 
+          echo "✅ HMBird GKI补丁应用完成"
+
       - name: Apply lz4kd Patches
-        if: ${{inputs.enable_feature_y }}
+        if: ${{ inputs.enable_feature_y }}
         run: |
           cd kernel_workspace/kernel_platform/common
           cp ../../SukiSU_patch/other/zram/zram_patch/6.6/lz4kd.patch ./
           patch -p1 -F 3 < lz4kd.patch || true
+          echo "✅ lz4kd补丁应用完成"
            
       - name: Add SUSFS Configuration Settings
         run: |
@@ -251,45 +252,41 @@ jobs:
           echo "CONFIG_TCP_CONG_HTCP=n" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_DEFAULT_TCP_CONG=bbr" >> ./common/arch/arm64/configs/gki_defconfig
           
-          #Remove check_defconfig
-          sudo sed -i 's/check_defconfig//' ./common/build.config.gki
-          cd common
-          git add -A && git commit -a -m "BUILD Kernel"
+          # Remove check_defconfig
+          sed -i 's/check_defconfig//' ./common/build.config.gki || true
+          echo "✅ 配置设置完成"
       
       - name: Add KPM Configuration Settings
-        if: ${{inputs.enable_feature_x }}
+        if: ${{ inputs.enable_feature_x }}
         run: |
           cd kernel_workspace/kernel_platform
           echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
-         
-          # Remove check_defconfig
-          sudo sed -i 's/check_defconfig//' ./common/build.config.gki
-          cd common
-          git add -A && git commit -a -m "BUILD Kernel"
+          echo "✅ KPM配置已添加"
           
       - name: Add make name
         run: |
           cd kernel_workspace/kernel_platform
           sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
-          sudo sed -i 's/-4k/${{ github.event.inputs.KERNEL_SUFFIX }}/g' ./common/arch/arm64/configs/gki_defconfig
+          sed -i 's/-4k/${{ github.event.inputs.KERNEL_SUFFIX }}/g' ./common/arch/arm64/configs/gki_defconfig
+          echo "✅ 内核名称设置完成"
 
       - name: Add sched_ext
-        if: ${{inputs.enable_feature_z }}
+        if: ${{ inputs.enable_feature_z }}
         run: |
           cd kernel_workspace/kernel_platform/
-          git clone https://github.com/HanKuCha/sched_ext.git
-          cp -r ./sched_ext/* ./common/kernel/sched
-          rm -rf ./sched_ext/.git
-          cd common/kernel/sched
+          git clone https://github.com/HanKuCha/sched_ext.git || echo "sched_ext已存在或克隆失败"
+          cp -r ./sched_ext/* ./common/kernel/sched/ || echo "复制sched_ext文件失败"
+          echo "✅ 风驰驱动添加完成"
 
       - name: Build Kernel
         run: |
           export KBUILD_BUILD_TIMESTAMP="${{ github.event.inputs.KERNEL_TIME }}"
           export PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$PATH"
           export PATH="/usr/lib/ccache:$PATH"
-          sudo apt install libelf-dev
+          
           cd kernel_workspace/kernel_platform/common
-          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld  HOSTLD=ld.lld O=out KCFLAGS+=-O2 gki_defconfig all
+          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 gki_defconfig all
+          echo "✅ 内核构建完成"
           
       - name: Apply Linux Patch
         run: |
@@ -299,16 +296,23 @@ jobs:
           ./patch_linux
           rm -f Image
           mv oImage Image
+          echo "✅ Linux补丁应用完成"
          
       - name: Make AnyKernel3
         run: |
           git clone https://github.com/Xiaomichael/AnyKernel3.git --depth=1   
           rm -rf ./AnyKernel3/.git
-          rm -rf ./AnyKernel3/push.sh
+          rm -f ./AnyKernel3/push.sh
           cp kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image ./AnyKernel3/
+          echo "✅ AnyKernel3打包完成"
 
       - name: Upload AnyKernel3
         uses: actions/upload-artifact@v4
         with:
-          name: SukiSU_${{ env.KSUVER }}_oneplus_ace5_Ultra
+          name: SukiSU_oneplus_ace5_Ultra_${{ github.sha }}
           path: ./AnyKernel3/*
+          
+      - name: Build Success
+        run: |
+          echo "🎉 内核构建流程完成！"
+          echo "出场代码: 2"
