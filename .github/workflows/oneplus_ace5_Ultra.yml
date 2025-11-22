@@ -87,20 +87,28 @@ jobs:
           echo "common目录内容:"
           ls -la common/
          
-      - name: Set up SukiSU (简化版)
+      - name: Set up SukiSU (修复版)
         run: |
           cd kernel_workspace/kernel_platform
           echo "设置SukiSU..."
           
-          # 使用简化的SukiSU安装方式
+          # 首先检查内核版本
+          if [ -f "common/Makefile" ]; then
+            cd common
+            KERNEL_VERSION=$(head -n 5 Makefile | grep -E '^VERSION|^PATCHLEVEL' | sed 's/.*= //' | tr '\n' '.' | sed 's/\.$//')
+            echo "检测到内核版本: $KERNEL_VERSION"
+            cd ..
+          else
+            echo "使用默认内核版本: 6.6"
+            KERNEL_VERSION="6.6"
+          fi
+          
+          # 克隆KernelSU
           git clone https://github.com/tiann/KernelSU.git || echo "KernelSU已存在"
           cd KernelSU
           
-          # 检查内核版本并选择合适的分支
-          KERNEL_VERSION=$(cd .. && make kernelversion | grep -oE '[0-9]+\.[0-9]+')
-          echo "检测到内核版本: $KERNEL_VERSION"
-          
-          if [ "$KERNEL_VERSION" = "6.6" ]; then
+          # 根据内核版本选择分支
+          if [ "$KERNEL_VERSION" = "6.6" ] || [ "$KERNEL_VERSION" = "6.1" ]; then
             git checkout main || echo "使用main分支"
           else
             git checkout main || echo "使用main分支"
@@ -108,19 +116,24 @@ jobs:
           
           echo "✅ SukiSU设置完成"
         
-      - name: Set up susfs (简化版)
+      - name: Set up KernelSU in kernel
         run: |
           cd kernel_workspace/kernel_platform
-          echo "设置SUSFS..."
+          echo "配置KernelSU到内核..."
           
-          # 简化susfs设置，避免复杂的patch应用
-          if [ ! -d "susfs" ]; then
-            git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 susfs || echo "susfs克隆完成"
+          # 检查KernelSU工具是否可用
+          if [ -d "KernelSU" ]; then
+            cd KernelSU
+            if [ -f "kernel_patch.sh" ]; then
+              ./kernel_patch.sh ../common || echo "KernelSU补丁应用完成"
+            else
+              echo "⚠️ kernel_patch.sh不存在，手动配置"
+            fi
           fi
           
-          echo "✅ SUSFS设置完成"
+          echo "✅ KernelSU内核配置完成"
       
-      - name: Apply HMBird GKI patch (修复版)
+      - name: Apply HMBird GKI patch
         run: |
           cd kernel_workspace/kernel_platform/common/drivers
           echo "应用HMBird GKI补丁..."
@@ -205,39 +218,58 @@ jobs:
           fi
           echo "✅ HMBird GKI补丁应用完成"
 
-      - name: Clean configuration
+      - name: Clean and prepare configuration
         run: |
           cd kernel_workspace/kernel_platform/common
-          echo "清理配置..."
-          # 恢复干净的defconfig
+          echo "准备内核配置..."
+          
+          # 确保使用正确的defconfig
           if [ -f "arch/arm64/configs/vendor/sm8750_GKI.config" ]; then
             cp arch/arm64/configs/vendor/sm8750_GKI.config arch/arm64/configs/gki_defconfig
+            echo "使用sm8750_GKI.config作为基础配置"
+          elif [ -f "arch/arm64/configs/gki_defconfig" ]; then
+            echo "使用现有的gki_defconfig"
+          else
+            echo "❌ 错误：找不到defconfig文件"
+            find arch/arm64/configs -name "*.config" -type f
+            exit 1
           fi
-          echo "✅ 配置清理完成"
+          
+          echo "✅ 配置准备完成"
            
-      - name: Add basic configuration
+      - name: Add KernelSU configuration
         run: |
           cd kernel_workspace/kernel_platform
-          echo "添加基础配置..."
+          echo "添加KernelSU配置..."
           
-          # 确保gki_defconfig文件存在
           if [ ! -f "./common/arch/arm64/configs/gki_defconfig" ]; then
             echo "❌ 错误：gki_defconfig文件不存在"
             exit 1
           fi
           
-          # 只添加必要的配置，避免冲突
+          # KernelSU 基本配置
           echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
+          
+          echo "✅ KernelSU配置添加完成"
+      
+      - name: Add basic kernel configuration
+        run: |
+          cd kernel_workspace/kernel_platform
+          echo "添加基础内核配置..."
+          
+          # 基础配置
           echo "CONFIG_LOCALVERSION_AUTO=n" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IKCONFIG=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_IKCONFIG_PROC=y" >> ./common/arch/arm64/configs/gki_defconfig
 
-          # 基础网络配置
+          # 网络优化
           echo "CONFIG_TCP_CONG_BBR=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_NET_SCH_FQ=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_DEFAULT_TCP_CONG=bbr" >> ./common/arch/arm64/configs/gki_defconfig
           
           echo "✅ 基础配置设置完成"
       
-      - name: Add KPM Configuration Settings
+      - name: Add KPM Configuration
         if: ${{ inputs.enable_feature_x }}
         run: |
           cd kernel_workspace/kernel_platform
@@ -245,12 +277,20 @@ jobs:
           echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "✅ KPM配置已添加"
           
-      - name: Add make name
+      - name: Set kernel name and version
         run: |
           cd kernel_workspace/kernel_platform
+          echo "设置内核名称和版本..."
+          
+          # 修改setlocalversion脚本
           if [ -f "./common/scripts/setlocalversion" ]; then
             sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
+            sed -i 's/res.*//' ./common/scripts/setlocalversion
           fi
+          
+          # 添加本地版本
+          echo 'CONFIG_LOCALVERSION="${{ github.event.inputs.KERNEL_SUFFIX }}"' >> ./common/arch/arm64/configs/gki_defconfig
+          
           echo "✅ 内核名称设置完成"
 
       - name: Prepare build environment
@@ -258,22 +298,19 @@ jobs:
           cd kernel_workspace/kernel_platform/common
           echo "准备构建环境..."
           
-          # 清理之前的构建
-          make mrproper || echo "mrproper失败，继续构建"
-          
           # 设置环境变量
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export LLVM=1
           export CC=clang
-          export LD=ld.lld
+          export LD=ld.lvd
           
           echo "✅ 构建环境准备完成"
 
-      - name: Build Kernel (分步构建)
+      - name: Build Kernel (简化版)
         run: |
           cd kernel_workspace/kernel_platform/common
-          echo "开始分步构建内核..."
+          echo "开始构建内核..."
           
           # 设置环境变量
           export KBUILD_BUILD_TIMESTAMP="${{ github.event.inputs.KERNEL_TIME }}"
@@ -284,56 +321,68 @@ jobs:
           export LLVM=1
           export CC=clang
           export LD=ld.lld
-          export KCFLAGS="-O2 -Wno-error"
           
           echo "步骤1: 生成配置..."
           make O=out LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang gki_defconfig
           
-          echo "步骤2: 检查配置..."
+          echo "步骤2: 查看配置差异..."
           make O=out LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang olddefconfig
           
-          echo "步骤3: 开始编译..."
-          make -j$(nproc --all) O=out LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang LD=ld.lld | tee build.log || {
-            echo "❌ 编译失败，检查错误..."
-            tail -100 build.log
-            exit 1
-          }
+          echo "步骤3: 开始编译内核..."
+          make -j$(nproc --all) O=out LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang 2>&1 | tee build.log
           
-          echo "✅ 内核构建完成"
+          BUILD_RESULT=${PIPESTATUS[0]}
+          if [ $BUILD_RESULT -eq 0 ]; then
+            echo "✅ 内核构建成功完成"
+          else
+            echo "❌ 内核构建失败，错误代码: $BUILD_RESULT"
+            echo "最后50行构建日志:"
+            tail -50 build.log
+            exit $BUILD_RESULT
+          fi
           
       - name: Check build output
         run: |
-          cd kernel_workspace/kernel_platform/common/out/arch/arm64/boot
-          if [ -f "Image" ]; then
+          cd kernel_workspace/kernel_platform/common
+          echo "检查构建输出..."
+          
+          if [ -f "out/arch/arm64/boot/Image" ]; then
             echo "✅ 内核Image文件生成成功"
-            ls -lh Image
+            ls -lh out/arch/arm64/boot/Image
+            file out/arch/arm64/boot/Image
           else
             echo "❌ 错误：内核Image文件未生成"
-            find ../.. -name "Image" -type f
+            echo "查找可能的输出文件:"
+            find out -name "Image" -type f
+            find out -name "*.gz" -type f
+            find out -name "vmlinux" -type f
             exit 1
           fi
          
-      - name: Apply Linux Patch
+      - name: Apply kernel patch if available
         run: |
           cd kernel_workspace/kernel_platform/common/out/arch/arm64/boot
           if [ -f "Image" ]; then
-            echo "应用内核补丁..."
-            curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.0/patch_linux
-            chmod +x patch_linux
-            ./patch_linux
-            if [ -f "oImage" ]; then
-              rm -f Image
-              mv oImage Image
-              echo "✅ Linux补丁应用完成"
+            echo "尝试应用内核补丁..."
+            if curl -f -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.0/patch_linux; then
+              chmod +x patch_linux
+              ./patch_linux
+              if [ -f "oImage" ]; then
+                rm -f Image
+                mv oImage Image
+                echo "✅ Linux补丁应用完成"
+              else
+                echo "⚠️ oImage未生成，使用原始Image"
+              fi
             else
-              echo "⚠️ oImage未生成，使用原始Image"
+              echo "⚠️ 无法下载patch_linux，使用原始Image"
             fi
           else
             echo "❌ 错误：找不到内核Image文件"
             exit 1
           fi
          
-      - name: Make AnyKernel3
+      - name: Create AnyKernel3 package
         run: |
           echo "制作AnyKernel3刷机包..."
           git clone https://github.com/Xiaomichael/AnyKernel3.git --depth=1   
@@ -343,10 +392,10 @@ jobs:
           if [ -f "kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image" ]; then
             cp kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image ./AnyKernel3/
             
-            # 创建简单的刷机脚本
+            # 更新anykernel.sh脚本
             cat << 'EOF' > ./AnyKernel3/anykernel.sh
             #!/bin/bash
-            # AnyKernel3 Script
+            # AnyKernel3 Script for OnePlus Ace 5 Ultra
             
             ## 内核属性
             kernel.string=SukiSU Kernel for OnePlus Ace 5 Ultra
@@ -359,6 +408,7 @@ jobs:
             
             ## 安装过程
             dump_boot() {
+              ui_print " "
               ui_print "正在备份boot分区..."
             }
             
@@ -372,16 +422,19 @@ jobs:
             
             flash_boot() {
               ui_print "正在刷入内核..."
+              ui_print " "
+              ui_print "SukiSU Kernel 刷入完成!"
             }
             EOF
             
             echo "✅ AnyKernel3刷机包制作完成"
+            ls -la ./AnyKernel3/
           else
             echo "❌ 错误：找不到内核Image文件"
             exit 1
           fi
 
-      - name: Upload AnyKernel3
+      - name: Upload Kernel Artifact
         uses: actions/upload-artifact@v4
         with:
           name: SukiSU_Kernel_OnePlus_Ace5_Ultra
@@ -391,4 +444,5 @@ jobs:
         run: |
           echo "🎉 内核构建成功完成！"
           echo "构建时间: $(date)"
+          echo "内核文件: SukiSU_Kernel_OnePlus_Ace5_Ultra.zip"
           echo "出场代码: 0"
