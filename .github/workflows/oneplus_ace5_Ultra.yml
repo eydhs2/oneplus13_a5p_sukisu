@@ -87,32 +87,15 @@ jobs:
           echo "common目录内容:"
           ls -la common/
          
-      - name: Set up SukiSU (修复版)
+      - name: Set up SukiSU
         run: |
           cd kernel_workspace/kernel_platform
           echo "设置SukiSU..."
           
-          # 首先检查内核版本
-          if [ -f "common/Makefile" ]; then
-            cd common
-            KERNEL_VERSION=$(head -n 5 Makefile | grep -E '^VERSION|^PATCHLEVEL' | sed 's/.*= //' | tr '\n' '.' | sed 's/\.$//')
-            echo "检测到内核版本: $KERNEL_VERSION"
-            cd ..
-          else
-            echo "使用默认内核版本: 6.6"
-            KERNEL_VERSION="6.6"
-          fi
-          
           # 克隆KernelSU
           git clone https://github.com/tiann/KernelSU.git || echo "KernelSU已存在"
           cd KernelSU
-          
-          # 根据内核版本选择分支
-          if [ "$KERNEL_VERSION" = "6.6" ] || [ "$KERNEL_VERSION" = "6.1" ]; then
-            git checkout main || echo "使用main分支"
-          else
-            git checkout main || echo "使用main分支"
-          fi
+          git checkout main || echo "使用main分支"
           
           echo "✅ SukiSU设置完成"
         
@@ -223,6 +206,11 @@ jobs:
           cd kernel_workspace/kernel_platform/common
           echo "准备内核配置..."
           
+          # 备份原始的setlocalversion脚本
+          if [ -f "scripts/setlocalversion" ]; then
+            cp scripts/setlocalversion scripts/setlocalversion.backup
+          fi
+          
           # 确保使用正确的defconfig
           if [ -f "arch/arm64/configs/vendor/sm8750_GKI.config" ]; then
             cp arch/arm64/configs/vendor/sm8750_GKI.config arch/arm64/configs/gki_defconfig
@@ -236,6 +224,40 @@ jobs:
           fi
           
           echo "✅ 配置准备完成"
+
+      - name: Fix setlocalversion script
+        run: |
+          cd kernel_workspace/kernel_platform/common
+          echo "修复setlocalversion脚本..."
+          
+          # 恢复原始脚本，然后进行安全修改
+          if [ -f "scripts/setlocalversion.backup" ]; then
+            cp scripts/setlocalversion.backup scripts/setlocalversion
+          fi
+          
+          # 安全地修改setlocalversion脚本
+          # 方法1: 使用更安全的方式禁用SCM版本
+          if [ -f "scripts/setlocalversion" ]; then
+            # 注释掉SCM版本相关的代码
+            sed -i 's/^\(.*scm_version.*\)$/#\1/' scripts/setlocalversion
+            sed -i 's/^\(.*res.*\)$/#\1/' scripts/setlocalversion
+            sed -i 's/^\(.*printf.*\)$/#\1/' scripts/setlocalversion
+            
+            # 在文件末尾添加空输出
+            echo "" >> scripts/setlocalversion
+            echo 'printf ""' >> scripts/setlocalversion
+            
+            # 检查脚本语法
+            bash -n scripts/setlocalversion && echo "✅ setlocalversion脚本语法正确" || {
+              echo "❌ setlocalversion脚本语法错误，使用备用方案"
+              # 如果语法错误，使用最简单的版本
+              echo '#!/bin/bash' > scripts/setlocalversion
+              echo 'printf ""' >> scripts/setlocalversion
+              chmod +x scripts/setlocalversion
+            }
+          fi
+          
+          echo "✅ setlocalversion脚本修复完成"
            
       - name: Add KernelSU configuration
         run: |
@@ -267,6 +289,9 @@ jobs:
           echo "CONFIG_NET_SCH_FQ=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_DEFAULT_TCP_CONG=bbr" >> ./common/arch/arm64/configs/gki_defconfig
           
+          # 添加自定义本地版本
+          echo "CONFIG_LOCALVERSION=\"${{ github.event.inputs.KERNEL_SUFFIX }}\"" >> ./common/arch/arm64/configs/gki_defconfig
+          
           echo "✅ 基础配置设置完成"
       
       - name: Add KPM Configuration
@@ -276,22 +301,6 @@ jobs:
           echo "CONFIG_MODULES=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "✅ KPM配置已添加"
-          
-      - name: Set kernel name and version
-        run: |
-          cd kernel_workspace/kernel_platform
-          echo "设置内核名称和版本..."
-          
-          # 修改setlocalversion脚本
-          if [ -f "./common/scripts/setlocalversion" ]; then
-            sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
-            sed -i 's/res.*//' ./common/scripts/setlocalversion
-          fi
-          
-          # 添加本地版本
-          echo 'CONFIG_LOCALVERSION="${{ github.event.inputs.KERNEL_SUFFIX }}"' >> ./common/arch/arm64/configs/gki_defconfig
-          
-          echo "✅ 内核名称设置完成"
 
       - name: Prepare build environment
         run: |
@@ -303,11 +312,11 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export LLVM=1
           export CC=clang
-          export LD=ld.lvd
+          export LD=ld.lld
           
           echo "✅ 构建环境准备完成"
 
-      - name: Build Kernel (简化版)
+      - name: Build Kernel (安全版本)
         run: |
           cd kernel_workspace/kernel_platform/common
           echo "开始构建内核..."
@@ -322,13 +331,22 @@ jobs:
           export CC=clang
           export LD=ld.lld
           
-          echo "步骤1: 生成配置..."
+          echo "步骤1: 验证setlocalversion脚本..."
+          bash -n scripts/setlocalversion && echo "✅ setlocalversion脚本语法正确" || {
+            echo "❌ setlocalversion脚本语法错误，使用备用脚本"
+            echo '#!/bin/bash' > scripts/setlocalversion
+            echo 'echo ""' >> scripts/setlocalversion
+            chmod +x scripts/setlocalversion
+          }
+          
+          echo "步骤2: 生成配置..."
           make O=out LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang gki_defconfig
           
-          echo "步骤2: 查看配置差异..."
+          echo "步骤3: 查看配置差异..."
           make O=out LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang olddefconfig
           
-          echo "步骤3: 开始编译内核..."
+          echo "步骤4: 开始编译内核..."
+          # 使用更详细的构建输出以便调试
           make -j$(nproc --all) O=out LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang 2>&1 | tee build.log
           
           BUILD_RESULT=${PIPESTATUS[0]}
@@ -336,6 +354,8 @@ jobs:
             echo "✅ 内核构建成功完成"
           else
             echo "❌ 内核构建失败，错误代码: $BUILD_RESULT"
+            echo "构建错误详情:"
+            grep -i error build.log | tail -20
             echo "最后50行构建日志:"
             tail -50 build.log
             exit $BUILD_RESULT
