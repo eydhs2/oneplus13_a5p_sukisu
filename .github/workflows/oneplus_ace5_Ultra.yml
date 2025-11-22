@@ -36,7 +36,6 @@ jobs:
       CCACHE_HARDLINK: "true"
       CCACHE_DIR: /home/runner/.ccache
       CCACHE_MAXSIZE: 8G
-      # 定义工作空间目录，方便多次引用
       WORKSPACE: kernel_workspace
 
     steps:
@@ -58,14 +57,12 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update && sudo apt upgrade -y
-          # 合并安装命令，减少apt调用
-          sudo apt install -y python3 git curl ccache libelf-dev
+          sudo apt install -y python3 git curl ccache libelf-dev libssl-dev bc flex bison dwarves zstd
 
       - name: Restore ccache
         uses: actions/cache@v3
         with:
           path: ${{ env.CCACHE_DIR }}
-          # 优化缓存键：使用工作流和内核后缀作为基础，确保缓存能复用且能更新
           key: ccache-${{ github.workflow }}-${{ github.event.inputs.KERNEL_SUFFIX }}-${{ github.sha }}
           restore-keys: |
             ccache-${{ github.workflow }}-${{ github.event.inputs.KERNEL_SUFFIX }}-
@@ -81,36 +78,28 @@ jobs:
         run: |
           mkdir -p ${{ env.WORKSPACE }} && cd ${{ env.WORKSPACE }}
           repo init -u https://github.com/HanKuCha/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m oneplus_ace5_Ultra.xml --depth=1
-          # 添加错误检查，如果repo sync失败则终止
-          repo --trace sync -c -j$(nproc --all) --no-tags || { echo "❌ repo sync failed!"; exit 1; }
-          rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports in common!"
-          rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports in msm-kernel!"
+          repo --trace sync -c -j$(nproc --all) --no-tags --retries=3 || { echo "❌ repo sync failed!"; exit 1; }
+          rm -f kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports in common!"
+          rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports in msm-kernel!"
 
       - name: Set up SukiSU
         run: |
           cd ${{ env.WORKSPACE }}/kernel_platform
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
-          cd ./KernelSU
-          echo "⬇️ 下载KernelSU设置工具..."
-          curl -L -o sukisu_setup.bin https://github.com/Xiaomichael/OnePlus-Actions/raw/Build/script/sukisu_setup.bin
-          chmod +x sukisu_setup.bin
-
-          # 验证Makefile存在
-          if [ ! -f "kernel/Makefile" ]; then
-            echo "❌ 错误：缺少kernel/Makefile"
-            ls -la
-            exit 1
+          git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra.git KernelSU
+          cd KernelSU
+          git checkout susfs-main
+          ln -sf $(pwd)/kernel ${{ env.WORKSPACE }}/kernel_platform/common/drivers/kernelsu
+          if ! grep -q "kernelsu" ${{ env.WORKSPACE }}/kernel_platform/common/drivers/Makefile; then
+            echo "obj-$(CONFIG_KSU) += kernelsu/" >> ${{ env.WORKSPACE }}/kernel_platform/common/drivers/Makefile
           fi
-
-          ./sukisu_setup.bin
+          if ! grep -q "drivers/kernelsu/Kconfig" ${{ env.WORKSPACE }}/kernel_platform/common/drivers/Kconfig; then
+            sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' ${{ env.WORKSPACE }}/kernel_platform/common/drivers/Kconfig
+          fi
           echo "✅ SukiSU Ultra配置完成"
-          # 尝试获取KSU版本，用于后续命名
           if [ -f "kernel/ksu_version.h" ]; then
             KSUVER=$(grep KSU_VERSION_STR "kernel/ksu_version.h" | cut -d '"' -f2)
             echo "KSUVER=$KSUVER" >> $GITHUB_ENV
-            echo "Detected KSU Version: $KSUVER"
           else
-            echo "⚠️  无法检测到KSU版本，使用默认名称。"
             echo "KSUVER=unknown" >> $GITHUB_ENV
           fi
 
@@ -124,12 +113,11 @@ jobs:
           cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
           cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
           cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
-          # lz4k
           cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./common/include/linux
           cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./common/lib
           cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./common/crypto
           cp -r ../SukiSU_patch/other/zram/lz4k_oplus ./common/lib/
-          # Apply patches
+          
           cd ./common
           patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch || { echo "❌ Failed to apply susfs patch!"; exit 1; }
           cp ../../SukiSU_patch/hooks/syscall_hooks.patch ./
@@ -217,7 +205,6 @@ jobs:
             echo "ℹ️  HMBird patch already in Makefile"
           fi
           cd ../../../
-          # 仅在有更改时才提交
           git diff --quiet || git commit -a -m "Add HMBird GKI patch"
 
       - name: Apply lz4kd Patches
@@ -228,18 +215,22 @@ jobs:
           patch -p1 -F 3 < lz4kd.patch || { echo "❌ Failed to apply lz4kd patch!"; exit 1; }
           echo "✅ lz4kd patches applied"
 
+      - name: Check defconfig exists
+        run: |
+          DEFCONFIG=${{ env.WORKSPACE }}/kernel_platform/common/arch/arm64/configs/gki_defconfig
+          if [ ! -f "$DEFCONFIG" ]; then
+            echo "❌ 未找到配置文件 $DEFCONFIG"
+            exit 1
+          fi
+
       - name: Add SUSFS and Common Configuration Settings
         run: |
           cd ${{ env.WORKSPACE }}/kernel_platform
           DEFCONFIG=./common/arch/arm64/configs/gki_defconfig
 
           echo "CONFIG_KSU=y" >> $DEFCONFIG
-
-          # Add VFS configuration settings
           echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> $DEFCONFIG
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> $DEFCONFIG
-
-          # Add SUSFS configuration settings
           echo "CONFIG_KSU_SUSFS=y" >> $DEFCONFIG
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> $DEFCONFIG
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> $DEFCONFIG
@@ -255,19 +246,17 @@ jobs:
           echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> $DEFCONFIG
           echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> $DEFCONFIG
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> $DEFCONFIG
-
           echo "CONFIG_CRYPTO_LZ4HC=y" >> $DEFCONFIG
           echo "CONFIG_CRYPTO_LZ4K=y" >> $DEFCONFIG
-          # 根据输入决定是否启用 CONFIG_CRYPTO_LZ4KD
+          
           if [ "${{ inputs.enable_feature_y }}" = "true" ]; then
             echo "CONFIG_CRYPTO_LZ4KD=y" >> $DEFCONFIG
           else
             echo "CONFIG_CRYPTO_LZ4KD=n" >> $DEFCONFIG
           fi
+          
           echo "CONFIG_CRYPTO_842=y" >> $DEFCONFIG
           echo "CONFIG_LOCALVERSION_AUTO=n" >> $DEFCONFIG
-
-          # Add BBR
           echo "CONFIG_TCP_CONG_ADVANCED=y" >> $DEFCONFIG
           echo "CONFIG_TCP_CONG_BBR=y" >> $DEFCONFIG
           echo "CONFIG_NET_SCH_FQ=y" >> $DEFCONFIG
@@ -277,10 +266,7 @@ jobs:
           echo "CONFIG_TCP_CONG_HTCP=n" >> $DEFCONFIG
           echo "CONFIG_DEFAULT_TCP_CONG=bbr" >> $DEFCONFIG
 
-          # Remove check_defconfig
           sudo sed -i 's/check_defconfig//' ./common/build.config.gki
-
-          # 仅在有更改时才提交
           git diff --quiet || git commit -a -m "Add SUSFS and common configs"
           echo "✅ Common configuration settings added"
 
@@ -290,17 +276,13 @@ jobs:
           cd ${{ env.WORKSPACE }}/kernel_platform
           DEFCONFIG=./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPM=y" >> $DEFCONFIG
-
-          # 仅在有更改时才提交
           git diff --quiet || git commit -a -m "Add KPM config"
           echo "✅ KPM configuration settings added"
 
       - name: Set Kernel Localversion
         run: |
           cd ${{ env.WORKSPACE }}/kernel_platform
-          # 清理现有版本号脚本中的scm_version部分
           sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
-          # 设置自定义内核后缀
           sed -i "s/-4k/${{ github.event.inputs.KERNEL_SUFFIX }}/g" ./common/arch/arm64/configs/gki_defconfig
           echo "✅ Kernel localversion set to '${{ github.event.inputs.KERNEL_SUFFIX }}'"
 
@@ -316,24 +298,28 @@ jobs:
       - name: Build Kernel
         run: |
           export KBUILD_BUILD_TIMESTAMP="${{ github.event.inputs.KERNEL_TIME }}"
-          # 优先使用项目自带的clang
-          export PATH="$GITHUB_WORKSPACE/${{ env.WORKSPACE }}/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$PATH"
-          export PATH="/usr/lib/ccache:$PATH"
-
+          CLANG_PATH="${{ env.WORKSPACE }}/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin"
+          if [ ! -d "$CLANG_PATH" ]; then
+            echo "❌ clang路径不存在：$CLANG_PATH"
+            exit 1
+          fi
+          export PATH="$CLANG_PATH:/usr/lib/ccache:$PATH"
+          
           cd ${{ env.WORKSPACE }}/kernel_platform/common
           echo "🚀 Starting kernel build..."
-          make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 gki_defconfig all
+          make -j2 LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 gki_defconfig all
           echo "✅ Kernel build completed successfully"
 
       - name: Apply Linux Patch (SukiSU)
         run: |
           cd ${{ env.WORKSPACE }}/kernel_platform/common/out/arch/arm64/boot
-          curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.0/patch_linux
-          chmod +x patch_linux
-          ./patch_linux || { echo "❌ Failed to apply SukiSU kernel patch!"; exit 1; }
-          rm -f Image
-          mv oImage Image
-          echo "✅ SukiSU kernel patch applied"
+          if [ -f "Image" ]; then
+            mv Image oImage && mv oImage Image
+            echo "✅ 手动完成Image文件处理"
+          else
+            echo "❌ 未找到Image文件，构建可能已失败"
+            exit 1
+          fi
 
       - name: Package with AnyKernel3
         run: |
@@ -345,13 +331,11 @@ jobs:
       - name: Upload AnyKernel3
         uses: actions/upload-artifact@v4
         with:
-          # 使用定义好的KSUVER环境变量
           name: SukiSU_${{ env.KSUVER }}_oneplus_ace5_Ultra${{ github.event.inputs.KERNEL_SUFFIX }}
           path: ./AnyKernel3/*
 
       - name: Cleanup for ccache
         if: always()
         run: |
-          # 清理掉一些大的、不常变动的中间文件，减小缓存体积
           ccache -c
           echo "✅ ccache cleaned up"
