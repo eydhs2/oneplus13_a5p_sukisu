@@ -1,0 +1,4 @@
+git apply fix-task_mmu-vma.patch
+git add fs/proc/task_mmu.c
+git commit -m "fs/proc: declare vma before use to fix compile error"
+git push origin fix/task_mmu-declare-vma
