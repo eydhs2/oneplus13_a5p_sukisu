@@ -80,11 +80,9 @@ jobs:
           mkdir kernel_workspace && cd kernel_workspace
           echo "正在同步 Android 16 内核源码..."
           
-          # 使用支持 Android 16 的 manifest
           repo init -u https://github.com/HanKuCha/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m oneplus_ace5_Ultra.xml --depth=1
           repo --trace sync -c -j$(nproc --all) --no-tags
           
-          # 清理保护导出符号
           rm -f kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
           rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
          
@@ -103,12 +101,10 @@ jobs:
           cd kernel_workspace/kernel_platform
           echo "设置 Android 16 KernelSU 支持..."
           
-          # 使用 KernelSU
           git clone https://github.com/tiann/KernelSU.git || echo "KernelSU 已存在"
           cd KernelSU
           git checkout main || echo "使用 main 分支"
           
-          # 应用 KernelSU 补丁
           if [ -f "kernel_patch.sh" ]; then
             ./kernel_patch.sh ../common || echo "KernelSU 补丁应用完成"
           else
@@ -124,14 +120,11 @@ jobs:
           cd kernel_workspace/kernel_platform
           echo "设置 Android 16 SUSFS 支持..."
           
-          # 下载 SUSFS
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 susfs_android16 || echo "SUSFS 克隆完成"
           
           if [ -d "susfs_android16" ]; then
-            # 复制 SUSFS 文件
             cp -r susfs_android16/kernel_patches/* ./common/ || echo "SUSFS 文件复制完成"
             
-            # 应用基础补丁
             cd common
             for patch in *.patch; do
               if [ -f "$patch" ]; then
@@ -147,80 +140,78 @@ jobs:
           cd kernel_workspace/kernel_platform/common/drivers
           echo "应用 Android 16 专用补丁..."
           
-          # HMBird GKI 补丁 (Android 16 适配版)
           cat << 'EOF' > hmbird_android16.c
-          #include <linux/init.h>
-          #include <linux/module.h>
-          #include <linux/of.h>
-          #include <linux/slab.h>
-          #include <linux/string.h>
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/slab.h>
+#include <linux/string.h>
 
-          static int __init hmbird_android16_patch_init(void)
-          {
-              struct device_node *ver_np;
-              const char *type;
-              int ret;
+static int __init hmbird_android16_patch_init(void)
+{
+    struct device_node *ver_np;
+    const char *type;
+    int ret;
 
-              ver_np = of_find_node_by_path("/soc/oplus,hmbird/version_type");
-              if (!ver_np) {
-                    pr_info("hmbird_android16: version_type node not found\n");
-                    return 0;
-              }
+    ver_np = of_find_node_by_path("/soc/oplus,hmbird/version_type");
+    if (!ver_np) {
+          pr_info("hmbird_android16: version_type node not found\n");
+          return 0;
+    }
 
-              ret = of_property_read_string(ver_np, "type", &type);
-              if (ret) {
-                    pr_info("hmbird_android16: type property not found\n");
-                    of_node_put(ver_np);
-                    return 0;
-              }
+    ret = of_property_read_string(ver_np, "type", &type);
+    if (ret) {
+          pr_info("hmbird_android16: type property not found\n");
+          of_node_put(ver_np);
+          return 0;
+    }
 
-              if (strcmp(type, "HMBIRD_OGKI") && strcmp(type, "HMBIRD_GKI_15")) {
-                    of_node_put(ver_np);
-                    return 0;
-              }
+    if (strcmp(type, "HMBIRD_OGKI") && strcmp(type, "HMBIRD_GKI_15")) {
+          of_node_put(ver_np);
+          return 0;
+    }
 
-              struct property *prop = of_find_property(ver_np, "type", NULL);
-              if (prop) {
-                    struct property *new_prop = kmalloc(sizeof(*prop), GFP_KERNEL);
-                    if (!new_prop) {
-                        pr_info("hmbird_android16: kmalloc for new_prop failed\n");
-                        of_node_put(ver_np);
-                        return 0;
-                    }
-                    memcpy(new_prop, prop, sizeof(*prop));
-                    new_prop->value = kmalloc(strlen("HMBIRD_GKI_16") + 1, GFP_KERNEL);
-                    if (!new_prop->value) {
-                        pr_info("hmbird_android16: kmalloc for new_prop->value failed\n");
-                        kfree(new_prop);
-                        of_node_put(ver_np);
-                        return 0;
-                    }
-                    strcpy(new_prop->value, "HMBIRD_GKI_16");
-                    new_prop->length = strlen("HMBIRD_GKI_16") + 1;
-
-                    if (of_remove_property(ver_np, prop) != 0) {
-                        pr_info("hmbird_android16: of_remove_property failed\n");
-                        return 0;
-                    }
-                    if (of_add_property(ver_np, new_prop) !=0) {
-                        pr_info("hmbird_android16: of_add_property failed\n");
-                        return 0;
-                    }
-                    pr_info("hmbird_android16: success to HMBIRD_GKI_16\n");
-              }
-              else {
-                  pr_info("hmbird_android16: type property structure not found\n");
-              }
+    struct property *prop = of_find_property(ver_np, "type", NULL);
+    if (prop) {
+          struct property *new_prop = kmalloc(sizeof(*prop), GFP_KERNEL);
+          if (!new_prop) {
+              pr_info("hmbird_android16: kmalloc for new_prop failed\n");
               of_node_put(ver_np);
               return 0;
           }
-          early_initcall(hmbird_android16_patch_init);
-          MODULE_LICENSE("GPL");
-          MODULE_AUTHOR("android16-builder");
-          MODULE_DESCRIPTION("Forcefully convert to HMBIRD_GKI_16 for Android 16.");
-          EOF
+          memcpy(new_prop, prop, sizeof(*prop));
+          new_prop->value = kmalloc(strlen("HMBIRD_GKI_16") + 1, GFP_KERNEL);
+          if (!new_prop->value) {
+              pr_info("hmbird_android16: kmalloc for new_prop->value failed\n");
+              kfree(new_prop);
+              of_node_put(ver_np);
+              return 0;
+          }
+          strcpy(new_prop->value, "HMBIRD_GKI_16");
+          new_prop->length = strlen("HMBIRD_GKI_16") + 1;
+
+          if (of_remove_property(ver_np, prop) != 0) {
+              pr_info("hmbird_android16: of_remove_property failed\n");
+              return 0;
+          }
+          if (of_add_property(ver_np, new_prop) !=0) {
+              pr_info("hmbird_android16: of_add_property failed\n");
+              return 0;
+          }
+          pr_info("hmbird_android16: success to HMBIRD_GKI_16\n");
+    }
+    else {
+        pr_info("hmbird_android16: type property structure not found\n");
+    }
+    of_node_put(ver_np);
+    return 0;
+}
+early_initcall(hmbird_android16_patch_init);
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("android16-builder");
+MODULE_DESCRIPTION("Forcefully convert to HMBIRD_GKI_16 for Android 16.");
+EOF
           
-          # 添加到 drivers Makefile
           if [ -f "Makefile" ] && ! grep -q "hmbird_android16.o" Makefile; then
             echo "obj-y += hmbird_android16.o" >> Makefile
           fi
@@ -232,25 +223,18 @@ jobs:
           cd kernel_workspace/kernel_platform
           echo "配置 Android 16 内核设置..."
           
-          # Android 16 专用配置
           echo "# Android 16 Specific Configurations" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_ANDROID16=y" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_ANDROID_BINDER_IPC_32BIT=n" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_ANDROID_BINDERFS=y" >> common/arch/arm64/configs/gki_defconfig
-          
-          # Android 16 安全增强
           echo "CONFIG_HARDENED_USERCOPY=y" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_STATIC_USERMODEHELPER=y" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_STATIC_USERMODEHELPER_PATH=\"\"" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_SLUB_DEBUG=y" >> common/arch/arm64/configs/gki_defconfig
-          
-          # 通用配置
-          echo "# Common Configurations" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_LOCALVERSION_AUTO=n" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_IKCONFIG=y" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_IKCONFIG_PROC=y" >> common/arch/arm64/configs/gki_defconfig
           
-          # KernelSU 配置
           if [ "${{ inputs.enable_ksu }}" = "true" ]; then
             echo "CONFIG_KSU=y" >> common/arch/arm64/configs/gki_defconfig
           fi
@@ -262,24 +246,19 @@ jobs:
           cd kernel_workspace/kernel_platform
           echo "添加性能优化配置..."
           
-          # 网络优化
           echo "# Network Optimizations" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_TCP_CONG_BBR=y" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_NET_SCH_FQ=y" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_DEFAULT_TCP_CONG=bbr" >> common/arch/arm64/configs/gki_defconfig
-          
-          # 压缩算法
           echo "# Compression Algorithms" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_CRYPTO_LZ4HC=y" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_CRYPTO_LZ4K=y" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_CRYPTO_842=y" >> common/arch/arm64/configs/gki_defconfig
           
-          # LZ4KD 压缩
           if [ "${{ inputs.enable_lz4kd }}" = "true" ]; then
             echo "CONFIG_CRYPTO_LZ4KD=y" >> common/arch/arm64/configs/gki_defconfig
           fi
           
-          # KPM 支持
           if [ "${{ inputs.enable_kpm }}" = "true" ]; then
             echo "CONFIG_MODULES=y" >> common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_KPM=y" >> common/arch/arm64/configs/gki_defconfig
@@ -293,7 +272,6 @@ jobs:
           cd kernel_workspace/kernel_platform
           echo "添加风驰调度器支持..."
           
-          # 下载调度器
           git clone https://github.com/HanKuCha/sched_ext.git sched_ext_android16 || echo "调度器源码下载完成"
           
           if [ -d "sched_ext_android16" ]; then
@@ -308,21 +286,16 @@ jobs:
           cd kernel_workspace/kernel_platform
           echo "设置内核版本和名称..."
           
-          # 安全地修改 setlocalversion
           if [ -f "common/scripts/setlocalversion" ]; then
-            # 备份原始脚本
             cp common/scripts/setlocalversion common/scripts/setlocalversion.backup
             
-            # 创建简化版本
             cat << 'EOF' > common/scripts/setlocalversion
 #!/bin/bash
-# Simplified setlocalversion for Android 16
 echo ""
 EOF
             chmod +x common/scripts/setlocalversion
           fi
           
-          # 设置本地版本
           echo "CONFIG_LOCALVERSION=\"${{ github.event.inputs.KERNEL_SUFFIX }}\"" >> common/arch/arm64/configs/gki_defconfig
           
           echo "✅ 内核版本设置完成"
@@ -334,7 +307,6 @@ EOF
           
           echo "开始构建 Android 16 内核..."
           
-          # 设置构建环境
           export PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$PATH"
           export PATH="/usr/lib/ccache:$PATH"
           export ARCH=arm64
@@ -344,7 +316,7 @@ EOF
           export LD=ld.lld
           export KCFLAGS="-O2 -Wno-error"
           
-          echo "步骤1: 验证构建环境..."
+          echo "步骤1: 生成配置..."
           make O=out LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang gki_defconfig
           
           echo "步骤2: 最终配置..."
@@ -358,9 +330,7 @@ EOF
             echo "✅ Android 16 内核构建成功"
           else
             echo "❌ 构建失败，错误代码: $BUILD_RESULT"
-            echo "构建错误:"
             grep -i error build_android16.log | tail -20
-            echo "最后50行日志:"
             tail -50 build_android16.log
             exit $BUILD_RESULT
           fi
@@ -374,39 +344,9 @@ EOF
             echo "✅ 内核 Image 文件生成成功"
             ls -lh out/arch/arm64/boot/Image
             file out/arch/arm64/boot/Image
-            
-            # 检查内核信息
-            strings out/arch/arm64/boot/Image | grep -i "android" | head -5
           else
             echo "❌ 错误：内核 Image 文件未生成"
             find out -name "Image" -type f
-            find out -name "vmlinux" -type f
-            exit 1
-          fi
-
-      - name: Apply Android 16 kernel patches
-        run: |
-          cd kernel_workspace/kernel_platform/common/out/arch/arm64/boot
-          if [ -f "Image" ]; then
-            echo "应用 Android 16 内核补丁..."
-            
-            # 下载补丁工具
-            if curl -f -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.0/patch_linux; then
-              chmod +x patch_linux
-              ./patch_linux
-              
-              if [ -f "oImage" ]; then
-                rm -f Image
-                mv oImage Image
-                echo "✅ Android 16 内核补丁应用完成"
-              else
-                echo "⚠️ oImage 未生成，使用原始 Image"
-              fi
-            else
-              echo "⚠️ 无法下载补丁工具，使用原始 Image"
-            fi
-          else
-            echo "❌ 错误：找不到内核 Image 文件"
             exit 1
           fi
 
@@ -422,13 +362,11 @@ EOF
           if [ -f "../kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image" ]; then
             cp ../kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image ./
             
-            # 创建 Android 16 专用刷机脚本
             cat << 'EOF' > anykernel.sh
 #!/bin/bash
 # AnyKernel3 Script for Android 16
 # For OnePlus Ace 5 Ultra
 
-## 内核属性
 kernel.string=SukiSU Android 16 Kernel for OnePlus Ace 5 Ultra
 do.devicecheck=1
 do.modules=0
@@ -437,41 +375,22 @@ do.cleanup=1
 do.cleanuponabort=0
 device.name1=oneplus_ace5_ultra
 
-## 安装过程
 dump_boot() {
     ui_print " "
-    ui_print "🔧 Android 16 内核安装开始..."
-    ui_print "📱 设备: OnePlus Ace 5 Ultra"
-    ui_print "🔄 正在备份 boot 分区..."
-}
-
-patch_dtbo() {
-    ui_print "🔨 正在修补 dtbo 镜像..."
+    ui_print "Android 16 内核安装开始..."
 }
 
 flash_boot() {
-    ui_print "⚡ 正在刷入 Android 16 内核..."
-    ui_print " "
-    ui_print "✅ SukiSU Android 16 内核刷入完成!"
-    ui_print " "
-    ui_print "📝 特性:"
-    ui_print "  • KernelSU Root 支持"
-    ui_print "  • Android 16 完全兼容"
-    ui_print "  • 性能优化"
-    ui_print "  • 安全增强"
-    ui_print " "
-    ui_print "🔁 请重启设备以应用更改"
+    ui_print "正在刷入 Android 16 内核..."
+    ui_print "SukiSU Android 16 内核刷入完成!"
 }
 
-## 执行安装
 package_extract_file Image /tmp/anykernel/Image
 write_boot
 EOF
 
             chmod +x anykernel.sh
-            
             echo "✅ Android 16 AnyKernel3 刷机包制作完成"
-            ls -la
           else
             echo "❌ 错误：找不到内核 Image 文件"
             exit 1
@@ -485,8 +404,7 @@ EOF
 
       - name: Build Complete
         run: |
-          echo "🎉 Android 16 内核构建全面完成!"
-          echo "📅 构建时间: $(date)"
-          echo "📦 输出文件: SukiSU_Android16_OnePlus_Ace5_Ultra.zip"
-          echo "✅ 状态: 成功"
-          echo "🏁 出场代码: 0"
+          echo "🎉 Android 16 内核构建完成!"
+          echo "构建时间: $(date)"
+          echo "输出文件: SukiSU_Android16_OnePlus_Ace5_Ultra.zip"
+          echo "状态: 成功"
