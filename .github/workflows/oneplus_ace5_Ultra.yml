@@ -78,20 +78,58 @@ jobs:
           rm -f kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
           rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
          
-      - name: Set up SukiSU
+      - name: Check kernel structure
         run: |
           cd kernel_workspace/kernel_platform
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
-          cd ./KernelSU
+          echo "检查内核目录结构:"
+          find . -name "Makefile" -type f | head -10
+          ls -la
+          echo "common目录内容:"
+          ls -la common/
+          echo "检查是否有kernel目录:"
+          ls -la common/ | grep kernel || echo "没有kernel目录"
+         
+      - name: Set up SukiSU (修复版)
+        run: |
+          cd kernel_workspace/kernel_platform
+          echo "当前目录: $(pwd)"
+          echo "目录内容:"
+          ls -la
           
-          # 验证Makefile存在
-          if [ ! -f "../kernel/Makefile" ]; then
-            echo "❌ 错误：缺少kernel/Makefile"
-            ls -la ../
+          # 首先检查内核目录结构
+          if [ -d "common" ]; then
+            echo "找到common目录"
+            cd common
+          elif [ -d "kernel" ]; then
+            echo "找到kernel目录"
+            cd kernel
+          else
+            echo "❌ 错误：找不到内核目录"
+            ls -la
             exit 1
           fi
           
-          # 下载并运行sukisu_setup.bin
+          # 检查Makefile是否存在
+          if [ ! -f "Makefile" ]; then
+            echo "❌ 错误：在当前目录找不到Makefile"
+            echo "当前目录内容:"
+            ls -la
+            exit 1
+          fi
+          
+          echo "✅ 找到Makefile，继续设置SukiSU"
+          cd ..
+          
+          # 下载并运行SukiSU设置脚本
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
+          
+          # 检查KernelSU目录是否创建成功
+          if [ ! -d "KernelSU" ]; then
+            echo "❌ 错误：KernelSU目录未创建"
+            exit 1
+          fi
+          
+          cd KernelSU
           echo "⬇️ 下载KernelSU设置工具..."
           curl -L -o sukisu_setup.bin https://github.com/Xiaomichael/OnePlus-Actions/raw/Build/script/sukisu_setup.bin
           chmod +x sukisu_setup.bin
@@ -101,25 +139,36 @@ jobs:
       - name: Set up susfs
         run: |
           cd kernel_workspace
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6
-          git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 || echo "susfs4ksu克隆完成"
+          git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git || echo "SukiSU_patch克隆完成"
 
           cd kernel_platform        
-          cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
-          cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
-          cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
+          
+          # 复制susfs文件
+          if [ -d "../susfs4ksu" ]; then
+            cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/ || echo "复制patch文件失败"
+            cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/ || echo "复制fs文件失败"
+            cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/ || echo "复制include文件失败"
+          fi
           
           # lz4k
-          cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./common/include/linux
-          cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./common/lib
-          cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./common/crypto
-          cp -r ../SukiSU_patch/other/zram/lz4k_oplus ./common/lib/
+          if [ -d "../SukiSU_patch" ]; then
+            cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./common/include/linux || echo "复制lz4k include失败"
+            cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./common/lib || echo "复制lz4k lib失败"
+            cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./common/crypto || echo "复制lz4k crypto失败"
+            cp -r ../SukiSU_patch/other/zram/lz4k_oplus ./common/lib/ || echo "复制lz4k_oplus失败"
+          fi
           
           # Apply patches
           cd ./common
-          patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch || true
-          cp ../../SukiSU_patch/hooks/syscall_hooks.patch ./
-          patch -p1 -F 3 < syscall_hooks.patch || true
+          if [ -f "50_add_susfs_in_gki-android15-6.6.patch" ]; then
+            patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch || echo "应用susfs patch失败"
+          fi
+          
+          if [ -f "../../SukiSU_patch/hooks/syscall_hooks.patch" ]; then
+            cp ../../SukiSU_patch/hooks/syscall_hooks.patch ./
+            patch -p1 -F 3 < syscall_hooks.patch || echo "应用syscall hooks patch失败"
+          fi
           echo "✅ SUSFS配置完成"
       
       - name: Apply HMBird GKI patch
@@ -206,13 +255,25 @@ jobs:
         if: ${{ inputs.enable_feature_y }}
         run: |
           cd kernel_workspace/kernel_platform/common
-          cp ../../SukiSU_patch/other/zram/zram_patch/6.6/lz4kd.patch ./
-          patch -p1 -F 3 < lz4kd.patch || true
+          if [ -f "../../SukiSU_patch/other/zram/zram_patch/6.6/lz4kd.patch" ]; then
+            cp ../../SukiSU_patch/other/zram/zram_patch/6.6/lz4kd.patch ./
+            patch -p1 -F 3 < lz4kd.patch || echo "应用lz4kd patch失败"
+          else
+            echo "⚠️ lz4kd.patch文件不存在，跳过"
+          fi
           echo "✅ lz4kd补丁应用完成"
            
       - name: Add SUSFS Configuration Settings
         run: |
           cd kernel_workspace/kernel_platform
+          
+          # 确保gki_defconfig文件存在
+          if [ ! -f "./common/arch/arm64/configs/gki_defconfig" ]; then
+            echo "❌ 错误：gki_defconfig文件不存在"
+            find ./common -name "gki_defconfig" -type f
+            exit 1
+          fi
+          
           echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
 
           # Add VFS configuration settings
@@ -253,7 +314,9 @@ jobs:
           echo "CONFIG_DEFAULT_TCP_CONG=bbr" >> ./common/arch/arm64/configs/gki_defconfig
           
           # Remove check_defconfig
-          sed -i 's/check_defconfig//' ./common/build.config.gki || true
+          if [ -f "./common/build.config.gki" ]; then
+            sed -i 's/check_defconfig//' ./common/build.config.gki || echo "修改build.config.gki失败"
+          fi
           echo "✅ 配置设置完成"
       
       - name: Add KPM Configuration Settings
@@ -266,8 +329,12 @@ jobs:
       - name: Add make name
         run: |
           cd kernel_workspace/kernel_platform
-          sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
-          sed -i 's/-4k/${{ github.event.inputs.KERNEL_SUFFIX }}/g' ./common/arch/arm64/configs/gki_defconfig
+          if [ -f "./common/scripts/setlocalversion" ]; then
+            sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
+          fi
+          if [ -f "./common/arch/arm64/configs/gki_defconfig" ]; then
+            sed -i 's/-4k/${{ github.event.inputs.KERNEL_SUFFIX }}/g' ./common/arch/arm64/configs/gki_defconfig
+          fi
           echo "✅ 内核名称设置完成"
 
       - name: Add sched_ext
@@ -275,7 +342,9 @@ jobs:
         run: |
           cd kernel_workspace/kernel_platform/
           git clone https://github.com/HanKuCha/sched_ext.git || echo "sched_ext已存在或克隆失败"
-          cp -r ./sched_ext/* ./common/kernel/sched/ || echo "复制sched_ext文件失败"
+          if [ -d "sched_ext" ]; then
+            cp -r ./sched_ext/* ./common/kernel/sched/ || echo "复制sched_ext文件失败"
+          fi
           echo "✅ 风驰驱动添加完成"
 
       - name: Build Kernel
@@ -285,26 +354,39 @@ jobs:
           export PATH="/usr/lib/ccache:$PATH"
           
           cd kernel_workspace/kernel_platform/common
+          echo "开始构建内核..."
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 gki_defconfig all
           echo "✅ 内核构建完成"
           
       - name: Apply Linux Patch
         run: |
           cd kernel_workspace/kernel_platform/common/out/arch/arm64/boot
-          curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.0/patch_linux
-          chmod +x patch_linux
-          ./patch_linux
-          rm -f Image
-          mv oImage Image
-          echo "✅ Linux补丁应用完成"
+          if [ -f "Image" ]; then
+            curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.0/patch_linux
+            chmod +x patch_linux
+            ./patch_linux
+            rm -f Image
+            mv oImage Image
+            echo "✅ Linux补丁应用完成"
+          else
+            echo "❌ 错误：找不到内核Image文件"
+            ls -la
+            exit 1
+          fi
          
       - name: Make AnyKernel3
         run: |
           git clone https://github.com/Xiaomichael/AnyKernel3.git --depth=1   
           rm -rf ./AnyKernel3/.git
           rm -f ./AnyKernel3/push.sh
-          cp kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image ./AnyKernel3/
-          echo "✅ AnyKernel3打包完成"
+          if [ -f "kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image" ]; then
+            cp kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image ./AnyKernel3/
+            echo "✅ AnyKernel3打包完成"
+          else
+            echo "❌ 错误：找不到内核Image文件"
+            find kernel_workspace -name "Image" -type f
+            exit 1
+          fi
 
       - name: Upload AnyKernel3
         uses: actions/upload-artifact@v4
