@@ -79,10 +79,8 @@ jobs:
         run: |
           mkdir kernel_workspace && cd kernel_workspace
           echo "正在同步 Android 16 内核源码..."
-          
           repo init -u https://github.com/HanKuCha/kernel_manifest.git -b refs/heads/oneplus/sm8750 -m oneplus_ace5_Ultra.xml --depth=1
           repo --trace sync -c -j$(nproc --all) --no-tags
-          
           rm -f kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
           rm -f kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
          
@@ -100,11 +98,9 @@ jobs:
         run: |
           cd kernel_workspace/kernel_platform
           echo "设置 Android 16 KernelSU 支持..."
-          
           git clone https://github.com/tiann/KernelSU.git || echo "KernelSU 已存在"
           cd KernelSU
           git checkout main || echo "使用 main 分支"
-          
           if [ -f "kernel_patch.sh" ]; then
             ./kernel_patch.sh ../common || echo "KernelSU 补丁应用完成"
           else
@@ -112,19 +108,15 @@ jobs:
             cd ../common
             echo "CONFIG_KSU=y" >> arch/arm64/configs/gki_defconfig
           fi
-          
           echo "✅ KernelSU Android 16 配置完成"
 
       - name: Setup SUSFS for Android 16
         run: |
           cd kernel_workspace/kernel_platform
           echo "设置 Android 16 SUSFS 支持..."
-          
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 susfs_android16 || echo "SUSFS 克隆完成"
-          
           if [ -d "susfs_android16" ]; then
             cp -r susfs_android16/kernel_patches/* ./common/ || echo "SUSFS 文件复制完成"
-            
             cd common
             for patch in *.patch; do
               if [ -f "$patch" ]; then
@@ -132,15 +124,13 @@ jobs:
               fi
             done
           fi
-          
           echo "✅ SUSFS Android 16 配置完成"
       
       - name: Apply Android 16 specific patches
         run: |
           cd kernel_workspace/kernel_platform/common/drivers
           echo "应用 Android 16 专用补丁..."
-          
-          cat << 'EOF' > hmbird_android16.c
+          cat > hmbird_android16.c << 'EOL'
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -210,19 +200,16 @@ early_initcall(hmbird_android16_patch_init);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("android16-builder");
 MODULE_DESCRIPTION("Forcefully convert to HMBIRD_GKI_16 for Android 16.");
-EOF
-          
+EOL
           if [ -f "Makefile" ] && ! grep -q "hmbird_android16.o" Makefile; then
             echo "obj-y += hmbird_android16.o" >> Makefile
           fi
-          
           echo "✅ Android 16 专用补丁应用完成"
 
       - name: Configure Android 16 kernel settings
         run: |
           cd kernel_workspace/kernel_platform
           echo "配置 Android 16 内核设置..."
-          
           echo "# Android 16 Specific Configurations" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_ANDROID16=y" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_ANDROID_BINDER_IPC_32BIT=n" >> common/arch/arm64/configs/gki_defconfig
@@ -234,18 +221,15 @@ EOF
           echo "CONFIG_LOCALVERSION_AUTO=n" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_IKCONFIG=y" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_IKCONFIG_PROC=y" >> common/arch/arm64/configs/gki_defconfig
-          
           if [ "${{ inputs.enable_ksu }}" = "true" ]; then
             echo "CONFIG_KSU=y" >> common/arch/arm64/configs/gki_defconfig
           fi
-          
           echo "✅ Android 16 内核配置完成"
 
       - name: Add performance optimizations
         run: |
           cd kernel_workspace/kernel_platform
           echo "添加性能优化配置..."
-          
           echo "# Network Optimizations" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_TCP_CONG_BBR=y" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_NET_SCH_FQ=y" >> common/arch/arm64/configs/gki_defconfig
@@ -254,16 +238,13 @@ EOF
           echo "CONFIG_CRYPTO_LZ4HC=y" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_CRYPTO_LZ4K=y" >> common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_CRYPTO_842=y" >> common/arch/arm64/configs/gki_defconfig
-          
           if [ "${{ inputs.enable_lz4kd }}" = "true" ]; then
             echo "CONFIG_CRYPTO_LZ4KD=y" >> common/arch/arm64/configs/gki_defconfig
           fi
-          
           if [ "${{ inputs.enable_kpm }}" = "true" ]; then
             echo "CONFIG_MODULES=y" >> common/arch/arm64/configs/gki_defconfig
             echo "CONFIG_KPM=y" >> common/arch/arm64/configs/gki_defconfig
           fi
-          
           echo "✅ 性能优化配置完成"
 
       - name: Add sched_ext for Android 16
@@ -271,42 +252,31 @@ EOF
         run: |
           cd kernel_workspace/kernel_platform
           echo "添加风驰调度器支持..."
-          
           git clone https://github.com/HanKuCha/sched_ext.git sched_ext_android16 || echo "调度器源码下载完成"
-          
           if [ -d "sched_ext_android16" ]; then
             cp -r sched_ext_android16/* common/kernel/sched/ || echo "调度器文件复制完成"
             echo "CONFIG_SCHED_EXT=y" >> common/arch/arm64/configs/gki_defconfig
           fi
-          
           echo "✅ 风驰调度器配置完成"
 
       - name: Set kernel version and name
         run: |
           cd kernel_workspace/kernel_platform
           echo "设置内核版本和名称..."
-          
           if [ -f "common/scripts/setlocalversion" ]; then
             cp common/scripts/setlocalversion common/scripts/setlocalversion.backup
-            
-            cat << 'EOF' > common/scripts/setlocalversion
-#!/bin/bash
-echo ""
-EOF
+            echo '#!/bin/bash' > common/scripts/setlocalversion
+            echo 'echo ""' >> common/scripts/setlocalversion
             chmod +x common/scripts/setlocalversion
           fi
-          
           echo "CONFIG_LOCALVERSION=\"${{ github.event.inputs.KERNEL_SUFFIX }}\"" >> common/arch/arm64/configs/gki_defconfig
-          
           echo "✅ 内核版本设置完成"
 
       - name: Build Android 16 Kernel
         run: |
           cd kernel_workspace/kernel_platform/common
           export KBUILD_BUILD_TIMESTAMP="${{ github.event.inputs.KERNEL_TIME }}"
-          
           echo "开始构建 Android 16 内核..."
-          
           export PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$PATH"
           export PATH="/usr/lib/ccache:$PATH"
           export ARCH=arm64
@@ -315,16 +285,12 @@ EOF
           export CC=clang
           export LD=ld.lld
           export KCFLAGS="-O2 -Wno-error"
-          
           echo "步骤1: 生成配置..."
           make O=out LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang gki_defconfig
-          
           echo "步骤2: 最终配置..."
           make O=out LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang olddefconfig
-          
           echo "步骤3: 开始编译..."
           make -j$(nproc --all) O=out LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang 2>&1 | tee build_android16.log
-          
           BUILD_RESULT=${PIPESTATUS[0]}
           if [ $BUILD_RESULT -eq 0 ]; then
             echo "✅ Android 16 内核构建成功"
@@ -339,7 +305,6 @@ EOF
         run: |
           cd kernel_workspace/kernel_platform/common
           echo "验证内核镜像..."
-          
           if [ -f "out/arch/arm64/boot/Image" ]; then
             echo "✅ 内核 Image 文件生成成功"
             ls -lh out/arch/arm64/boot/Image
@@ -354,15 +319,12 @@ EOF
         run: |
           echo "制作 Android 16 AnyKernel3 刷机包..."
           git clone https://github.com/Xiaomichael/AnyKernel3.git AnyKernel3_Android16
-          
           cd AnyKernel3_Android16
           rm -rf .git
           rm -f push.sh
-          
           if [ -f "../kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image" ]; then
             cp ../kernel_workspace/kernel_platform/common/out/arch/arm64/boot/Image ./
-            
-            cat << 'EOF' > anykernel.sh
+            cat > anykernel.sh << 'EOL'
 #!/bin/bash
 # AnyKernel3 Script for Android 16
 # For OnePlus Ace 5 Ultra
@@ -387,8 +349,7 @@ flash_boot() {
 
 package_extract_file Image /tmp/anykernel/Image
 write_boot
-EOF
-
+EOL
             chmod +x anykernel.sh
             echo "✅ Android 16 AnyKernel3 刷机包制作完成"
           else
