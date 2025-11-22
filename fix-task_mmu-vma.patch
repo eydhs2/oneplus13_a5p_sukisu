@@ -2,3 +2,23 @@ git apply fix-task_mmu-vma.patch
 git add fs/proc/task_mmu.c
 git commit -m "fs/proc: declare vma before use to fix compile error"
 git push origin fix/task_mmu-declare-vma
+From 4ba7f7dc6937ddfda883595681c26c50056459ce Mon Sep 17 00:00:00 2001
+From: Automated patch <bot@users.noreply.github.com>
+Date: Sat, 22 Nov 2025 06:39:17 +0000
+Subject: [PATCH] fs/proc: declare vma before use to fix compile error
+--- 
+fs/proc/task_mmu.c | 3 ++- 
+1 file changed, 2 insertions(+), 1 deletion(-)
+diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
+index 0000000..0000000 100644
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -1825,7 +1825,8 @@
+-                vma = find_vma(mm, start_vaddr);
+-                if (vma && vma->vm_file) {
+-                        struct inode *inode = file_inode(vma->vm_file);
++                struct vm_area_struct *vma = find_vma(mm, start_vaddr);
++                if (vma && vma->vm_file) {
++                        struct inode *inode = file_inode(vma->vm_file);                         
+/* existing code follows */
+---
